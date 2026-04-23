@@ -1,0 +1,733 @@
+"use client";
+
+import { useState } from "react";
+import {
+  TemplateAnalysisResult,
+  TemplateMatch,
+  MatchStatus,
+} from "@/lib/template-matcher";
+import {
+  TemplateCategory,
+  CATEGORY_META,
+  TemplatePriority,
+} from "@/data/policy-templates";
+import { ScoreRing, Card } from "./ui-primitives";
+import {
+  CheckCircle2,
+  AlertCircle,
+  XCircle,
+  ChevronDown,
+  ChevronRight,
+  Download,
+  ExternalLink,
+  Filter,
+  Ban,
+  Github,
+  Loader2,
+  X,
+} from "lucide-react";
+import { cn } from "@/lib/utils";
+
+// ─── Props ───────────────────────────────────────────────────────────────────
+
+interface TemplatesViewProps {
+  result: TemplateAnalysisResult;
+  /** Current custom repo display name (null = using built-in) */
+  customRepoDisplay?: string | null;
+  /** Callback when user wants to load templates from a GitHub URL */
+  onLoadGitHub?: (url: string) => Promise<string | null>;
+  /** Callback to reset back to built-in templates */
+  onResetTemplates?: () => void;
+}
+
+// ─── Status Badge ────────────────────────────────────────────────────────────
+
+function StatusBadge({ status }: { status: MatchStatus }) {
+  const map: Record<
+    MatchStatus,
+    { label: string; color: string; Icon: typeof CheckCircle2 }
+  > = {
+    present: { label: "Present", color: "text-emerald-400 bg-emerald-400/10", Icon: CheckCircle2 },
+    partial: { label: "Partial", color: "text-amber-400 bg-amber-400/10", Icon: AlertCircle },
+    missing: { label: "Missing", color: "text-red-400 bg-red-400/10", Icon: XCircle },
+    "not-applicable": { label: "N/A — License", color: "text-gray-500 bg-gray-500/10", Icon: Ban },
+  };
+  const { label, color, Icon } = map[status];
+  return (
+    <span className={cn("inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium", color)}>
+      <Icon className="h-3.5 w-3.5" />
+      {label}
+    </span>
+  );
+}
+
+function PriorityBadge({ priority }: { priority: TemplatePriority }) {
+  const colors: Record<TemplatePriority, string> = {
+    critical: "text-red-300 bg-red-400/10",
+    recommended: "text-blue-300 bg-blue-400/10",
+    optional: "text-gray-400 bg-gray-400/10",
+  };
+  return (
+    <span className={cn("rounded-full px-2 py-0.5 text-xs font-medium", colors[priority])}>
+      {priority}
+    </span>
+  );
+}
+
+// ─── Template Card ───────────────────────────────────────────────────────────
+
+function TemplateCard({ match }: { match: TemplateMatch }) {
+  const [expanded, setExpanded] = useState(false);
+  const t = match.template;
+
+  const handleExport = () => {
+    const json = JSON.stringify(t.deploymentJson, null, 2);
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${t.id}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div
+      className={cn(
+        "rounded-lg border bg-gray-900 transition-colors",
+        match.status === "present"
+          ? "border-emerald-800/50"
+          : match.status === "partial"
+            ? "border-amber-800/50"
+            : match.status === "not-applicable"
+              ? "border-gray-800/50 opacity-60"
+              : "border-gray-800"
+      )}
+    >
+      {/* Header */}
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="flex w-full items-center justify-between gap-3 p-4 text-left"
+      >
+        <div className="flex items-center gap-3 min-w-0">
+          {expanded ? (
+            <ChevronDown className="h-4 w-4 shrink-0 text-gray-500" />
+          ) : (
+            <ChevronRight className="h-4 w-4 shrink-0 text-gray-500" />
+          )}
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h4 className="text-sm font-semibold text-white truncate">
+                {t.displayName}
+              </h4>
+              <PriorityBadge priority={t.priority} />
+            </div>
+            <p className="text-xs text-gray-500 mt-0.5">{t.summary}</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-3 shrink-0">
+          {match.confidence > 0 && (
+            <span className="text-xs text-gray-500">
+              {match.confidence}% match
+            </span>
+          )}
+          <StatusBadge status={match.status} />
+        </div>
+      </button>
+
+      {/* Expanded Content */}
+      {expanded && (
+        <div className="border-t border-gray-800 p-4 space-y-4">
+          {/* Rationale */}
+          <div>
+            <h5 className="text-xs font-medium text-gray-400 uppercase mb-1">
+              Why this matters
+            </h5>
+            <p className="text-sm text-gray-300">{t.rationale}</p>
+          </div>
+
+          {/* CIS Mapping */}
+          {t.cisControls && t.cisControls.length > 0 && (
+            <div>
+              <h5 className="text-xs font-medium text-gray-400 uppercase mb-1">
+                CIS Controls
+              </h5>
+              <div className="flex gap-2 flex-wrap">
+                {t.cisControls.map((c) => (
+                  <span
+                    key={c}
+                    className="rounded bg-indigo-400/10 px-2 py-0.5 text-xs text-indigo-300 font-mono"
+                  >
+                    CIS {c}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Matching Policies */}
+          {match.matchingPolicies.length > 0 && (
+            <div>
+              <h5 className="text-xs font-medium text-gray-400 uppercase mb-1">
+                Matching Tenant Policies
+              </h5>
+              <div className="space-y-2">
+                {match.matchingPolicies.map((mp) => (
+                  <div
+                    key={mp.policy.id}
+                    className="rounded bg-gray-800 px-3 py-2"
+                  >
+                    <div className="flex items-center justify-between text-sm">
+                      <div className="flex items-center gap-2 truncate">
+                        <span className="text-gray-300 truncate">
+                          {mp.policy.displayName}
+                        </span>
+                        {mp.policy.state === "disabled" && (
+                          <span className="shrink-0 rounded bg-red-400/10 px-1.5 py-0.5 text-[10px] font-medium text-red-400">
+                            Disabled
+                          </span>
+                        )}
+                        {mp.policy.state === "enabledForReportingButNotEnforced" && (
+                          <span className="shrink-0 rounded bg-amber-400/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-400">
+                            Report-only
+                          </span>
+                        )}
+                      </div>
+                      <span
+                        className={cn(
+                          "text-xs font-mono shrink-0 ml-2",
+                          mp.similarity >= 85
+                            ? "text-emerald-400"
+                            : mp.similarity >= 60
+                              ? "text-amber-400"
+                              : "text-gray-500"
+                        )}
+                      >
+                        {mp.similarity}%
+                      </span>
+                    </div>
+                    {mp.differences.length > 0 && (
+                      <ul className="mt-1.5 space-y-0.5">
+                        {mp.differences.map((d, i) => (
+                          <li key={i} className="flex gap-2 text-[11px] text-gray-500">
+                            <span className="text-amber-500 shrink-0">•</span>
+                            <span>{d}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Actionable Gaps */}
+          {match.gaps.length > 0 && (
+            <div>
+              <h5 className="text-xs font-medium text-gray-400 uppercase mb-1">
+                🛠 How to reach 100%
+              </h5>
+              <ul className="space-y-1.5">
+                {match.gaps.map((g, i) => (
+                  <li key={i} className="flex gap-2 text-xs text-blue-300/90">
+                    <span className="text-blue-400 shrink-0">→</span>
+                    <span>{g}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* Actions */}
+          <div className="flex gap-2 pt-2">
+            <button
+              onClick={handleExport}
+              className="flex items-center gap-1.5 rounded-md border border-gray-700 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-800 transition-colors"
+            >
+              <Download className="h-3.5 w-3.5" />
+              Download JSON
+            </button>
+            <a
+              href="https://github.com/Jhope188/ConditionalAccessPolicies"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-1.5 rounded-md border border-gray-700 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-800 transition-colors"
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+              View Repo
+            </a>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+
+// ─── Custom Repo Prefix Grouping ─────────────────────────────────────────────
+
+/** Extract a prefix group (e.g. "CAD", "CAL", "CAP") and numeric index from a template name */
+function parsePrefix(name: string): { prefix: string; num: number; rest: string } {
+  // Match patterns like "CAD005", "CAL001-All", "CAP001-All" at the start
+  const m = name.match(/^([A-Za-z]+?)(\d+)/);
+  if (m) {
+    return { prefix: m[1].toUpperCase(), num: parseInt(m[2], 10), rest: name };
+  }
+  return { prefix: "ZZZ", num: 0, rest: name }; // fallback sorts last
+}
+
+/** Sort matches by prefix group then numeric index */
+function sortByPrefix(matches: TemplateMatch[]): TemplateMatch[] {
+  return [...matches].sort((a, b) => {
+    const pa = parsePrefix(a.template.displayName);
+    const pb = parsePrefix(b.template.displayName);
+    if (pa.prefix !== pb.prefix) return pa.prefix.localeCompare(pb.prefix);
+    if (pa.num !== pb.num) return pa.num - pb.num;
+    return pa.rest.localeCompare(pb.rest);
+  });
+}
+
+/** Group matches by their prefix, preserving sort order */
+function groupByPrefix(matches: TemplateMatch[]): { prefix: string; matches: TemplateMatch[] }[] {
+  const sorted = sortByPrefix(matches);
+  const groups: { prefix: string; matches: TemplateMatch[] }[] = [];
+  for (const m of sorted) {
+    const { prefix } = parsePrefix(m.template.displayName);
+    const last = groups[groups.length - 1];
+    if (last && last.prefix === prefix) {
+      last.matches.push(m);
+    } else {
+      groups.push({ prefix, matches: [m] });
+    }
+  }
+  return groups;
+}
+
+function PrefixGroupSection({
+  prefix,
+  matches,
+}: {
+  prefix: string;
+  matches: TemplateMatch[];
+}) {
+  const [collapsed, setCollapsed] = useState(false);
+  const present = matches.filter((m) => m.status === "present").length;
+  const partial = matches.filter((m) => m.status === "partial").length;
+  const missing = matches.filter((m) => m.status === "missing").length;
+  const na = matches.filter((m) => m.status === "not-applicable").length;
+  const applicable = matches.length - na;
+
+  return (
+    <div className="space-y-3">
+      <button
+        onClick={() => setCollapsed(!collapsed)}
+        className="flex w-full items-center justify-between"
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-lg">📋</span>
+          <h3 className="text-base font-semibold text-white">{prefix} Policies</h3>
+          <span className="text-xs text-gray-500">
+            {present}/{applicable} present{na > 0 ? ` · ${na} N/A` : ""}
+          </span>
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="flex gap-1.5 text-xs">
+            {present > 0 && <span className="text-emerald-400">{present}✓</span>}
+            {partial > 0 && <span className="text-amber-400">{partial}~</span>}
+            {missing > 0 && <span className="text-red-400">{missing}✗</span>}
+            {na > 0 && <span className="text-gray-500">{na} N/A</span>}
+          </div>
+          {collapsed ? (
+            <ChevronRight className="h-4 w-4 text-gray-500" />
+          ) : (
+            <ChevronDown className="h-4 w-4 text-gray-500" />
+          )}
+        </div>
+      </button>
+
+      {!collapsed && (
+        <div className="space-y-2">
+          {matches.map((match) => (
+            <TemplateCard key={match.template.id} match={match} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Category Section ────────────────────────────────────────────────────────
+
+function CategorySection({
+  category,
+  matches,
+  score,
+}: {
+  category: TemplateCategory;
+  matches: TemplateMatch[];
+  score: number;
+}) {
+  const meta = CATEGORY_META[category];
+  const [collapsed, setCollapsed] = useState(false);
+
+  const present = matches.filter((m) => m.status === "present").length;
+  const partial = matches.filter((m) => m.status === "partial").length;
+  const missing = matches.filter((m) => m.status === "missing").length;
+  const na = matches.filter((m) => m.status === "not-applicable").length;
+  const applicable = matches.length - na;
+
+  return (
+    <div className="space-y-3">
+      <button
+        onClick={() => setCollapsed(!collapsed)}
+        className="flex w-full items-center justify-between"
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-lg">{meta.icon}</span>
+          <h3 className="text-base font-semibold text-white">{meta.label}</h3>
+          <span className="text-xs text-gray-500">
+            {present}/{applicable} present{na > 0 ? ` · ${na} N/A` : ""}
+          </span>
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="flex gap-1.5 text-xs">
+            {present > 0 && (
+              <span className="text-emerald-400">{present}✓</span>
+            )}
+            {partial > 0 && (
+              <span className="text-amber-400">{partial}~</span>
+            )}
+            {missing > 0 && (
+              <span className="text-red-400">{missing}✗</span>
+            )}
+            {na > 0 && (
+              <span className="text-gray-500">{na} N/A</span>
+            )}
+          </div>
+          <div
+            className={cn(
+              "h-2 w-16 rounded-full bg-gray-800 overflow-hidden"
+            )}
+          >
+            <div
+              className={cn(
+                "h-full rounded-full transition-all",
+                score >= 80
+                  ? "bg-emerald-500"
+                  : score >= 50
+                    ? "bg-amber-500"
+                    : "bg-red-500"
+              )}
+              style={{ width: `${score}%` }}
+            />
+          </div>
+          {collapsed ? (
+            <ChevronRight className="h-4 w-4 text-gray-500" />
+          ) : (
+            <ChevronDown className="h-4 w-4 text-gray-500" />
+          )}
+        </div>
+      </button>
+      <p className="text-xs text-gray-500 -mt-1">{meta.description}</p>
+
+      {!collapsed && (
+        <div className="space-y-2">
+          {matches.map((match) => (
+            <TemplateCard key={match.template.id} match={match} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Main View ───────────────────────────────────────────────────────────────
+
+export function TemplatesView({
+  result,
+  customRepoDisplay,
+  onLoadGitHub,
+  onResetTemplates,
+}: TemplatesViewProps) {
+  const [statusFilter, setStatusFilter] = useState<MatchStatus | "all">("all");
+  const [showGitHubInput, setShowGitHubInput] = useState(false);
+  const [gitHubUrl, setGitHubUrl] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  const handleLoadGitHub = async () => {
+    if (!onLoadGitHub || !gitHubUrl.trim()) return;
+    setLoading(true);
+    setLoadError(null);
+    const error = await onLoadGitHub(gitHubUrl.trim());
+    setLoading(false);
+    if (error) {
+      setLoadError(error);
+    } else {
+      setShowGitHubInput(false);
+      setGitHubUrl("");
+    }
+  };
+
+  const handleReset = () => {
+    onResetTemplates?.();
+    setShowGitHubInput(false);
+    setGitHubUrl("");
+    setLoadError(null);
+  };
+
+  const filteredMatches =
+    statusFilter === "all"
+      ? result.matches
+      : result.matches.filter((m) => m.status === statusFilter);
+
+  // Group by category
+  const categories = [
+    ...new Set(result.matches.map((m) => m.template.category)),
+  ] as TemplateCategory[];
+
+  const categoryOrder: TemplateCategory[] = [
+    "foundation",
+    "baseline",
+    "app-specific",
+    "intune",
+    "p2",
+    "workload",
+    "ztca",
+    "agent",
+  ];
+  categories.sort(
+    (a, b) => categoryOrder.indexOf(a) - categoryOrder.indexOf(b)
+  );
+
+  const handleExportAll = () => {
+    const missingTemplates = result.matches
+      .filter((m) => m.status === "missing")
+      .map((m) => m.template.deploymentJson);
+    const blob = new Blob([JSON.stringify(missingTemplates, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `missing-policy-templates-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Summary Header */}
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+        <Card className="flex flex-col items-center justify-center p-6 sm:col-span-2">
+          <ScoreRing score={result.coverageScore} />
+          <p className="mt-3 text-sm text-gray-400">Template Coverage</p>
+          <p className="text-xs text-gray-600">
+            Based on {result.totalTemplates - result.notApplicableCount} applicable policies
+            {result.notApplicableCount > 0 && (
+              <span> ({result.notApplicableCount} excluded — license N/A)</span>
+            )}
+          </p>
+        </Card>
+
+        <Card className="flex flex-col items-center justify-center p-4">
+          <div className="text-3xl font-bold text-emerald-400">
+            {result.presentCount}
+          </div>
+          <div className="text-xs text-gray-400 mt-1">Present</div>
+        </Card>
+        <Card className="flex flex-col items-center justify-center p-4">
+          <div className="text-3xl font-bold text-amber-400">
+            {result.partialCount}
+          </div>
+          <div className="text-xs text-gray-400 mt-1">Partial</div>
+        </Card>
+        <Card className="flex flex-col items-center justify-center p-4">
+          <div className="text-3xl font-bold text-red-400">
+            {result.missingCount}
+          </div>
+          <div className="text-xs text-gray-400 mt-1">Missing</div>
+        </Card>
+      </div>
+
+      {/* Source Attribution & GitHub Input */}
+      <div className="rounded-lg border border-gray-800 bg-gray-900 px-4 py-3 space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 text-sm text-gray-400">
+            <span>📋</span>
+            {customRepoDisplay ? (
+              <>
+                Comparing against{" "}
+                <a
+                  href={`https://github.com/${customRepoDisplay}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-blue-400 hover:text-blue-300 underline"
+                >
+                  {customRepoDisplay}
+                </a>
+                <button
+                  onClick={handleReset}
+                  className="ml-2 rounded-md border border-gray-700 px-2 py-0.5 text-xs text-gray-400 hover:text-white hover:bg-gray-800 transition-colors"
+                >
+                  ← Back to default
+                </button>
+              </>
+            ) : (
+              <>
+                Templates from{" "}
+                <a
+                  href="https://github.com/Jhope188/ConditionalAccessPolicies"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-blue-400 hover:text-blue-300 underline"
+                >
+                  Jhope188/ConditionalAccessPolicies
+                </a>
+              </>
+            )}
+          </div>
+          <div className="flex gap-2">
+            {onLoadGitHub && !customRepoDisplay && (
+              <button
+                onClick={() => setShowGitHubInput(!showGitHubInput)}
+                className="flex items-center gap-1.5 rounded-md border border-gray-700 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-800 transition-colors"
+              >
+                <Github className="h-3.5 w-3.5" />
+                Compare Custom Repo
+              </button>
+            )}
+            <button
+              onClick={handleExportAll}
+              disabled={result.missingCount === 0}
+              className={cn(
+                "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs transition-colors",
+                result.missingCount > 0
+                  ? "border border-gray-700 text-gray-300 hover:bg-gray-800"
+                  : "text-gray-600 cursor-not-allowed"
+              )}
+            >
+              <Download className="h-3.5 w-3.5" />
+              Export Missing ({result.missingCount})
+            </button>
+          </div>
+        </div>
+
+        {/* GitHub URL Input */}
+        {showGitHubInput && (
+          <div className="space-y-2">
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={gitHubUrl}
+                onChange={(e) => setGitHubUrl(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleLoadGitHub()}
+                placeholder="https://github.com/owner/repo or owner/repo"
+                className="flex-1 rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                disabled={loading}
+              />
+              <button
+                onClick={handleLoadGitHub}
+                disabled={loading || !gitHubUrl.trim()}
+                className={cn(
+                  "flex items-center gap-1.5 rounded-md px-4 py-2 text-sm font-medium transition-colors",
+                  loading || !gitHubUrl.trim()
+                    ? "bg-gray-700 text-gray-500 cursor-not-allowed"
+                    : "bg-blue-600 text-white hover:bg-blue-500"
+                )}
+              >
+                {loading ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <ExternalLink className="h-4 w-4" />
+                )}
+                {loading ? "Loading…" : "Load"}
+              </button>
+              <button
+                onClick={() => {
+                  setShowGitHubInput(false);
+                  setGitHubUrl("");
+                  setLoadError(null);
+                }}
+                className="rounded-md border border-gray-700 px-2 py-2 text-gray-400 hover:text-white hover:bg-gray-800 transition-colors"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <p className="text-xs text-gray-500">
+              Enter a public GitHub repo containing CA policy JSON exports (Graph API format).
+              The tool will auto-detect JSON files in the root or common subdirectories (Policies/, policies/, CA/).
+            </p>
+            {loadError && (
+              <p className="text-xs text-red-400">{loadError}</p>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Filters */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <Filter className="h-4 w-4 text-gray-500" />
+        {(["all", "missing", "partial", "present", "not-applicable"] as const).map((f) => (
+          <button
+            key={f}
+            onClick={() => setStatusFilter(f)}
+            className={cn(
+              "rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
+              statusFilter === f
+                ? "bg-gray-700 text-white"
+                : "text-gray-400 hover:text-white"
+            )}
+          >
+            {f === "all" ? "All" : f === "not-applicable" ? "N/A" : f.charAt(0).toUpperCase() + f.slice(1)}
+            {f !== "all" && (
+              <span className="ml-1 text-gray-500">
+                (
+                {f === "missing"
+                  ? result.missingCount
+                  : f === "partial"
+                    ? result.partialCount
+                    : f === "not-applicable"
+                      ? result.notApplicableCount
+                      : result.presentCount}
+                )
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {/* Category / Prefix Sections */}
+      <div className="space-y-8">
+        {customRepoDisplay ? (
+          /* Custom repo: group by naming prefix (CAD, CAL, CAP…) */
+          groupByPrefix(filteredMatches).map((group) => (
+            <PrefixGroupSection
+              key={group.prefix}
+              prefix={group.prefix}
+              matches={group.matches}
+            />
+          ))
+        ) : (
+          /* Built-in templates: group by category */
+          categories.map((cat) => {
+            const catMatches = filteredMatches.filter(
+              (m) => m.template.category === cat
+            );
+            if (catMatches.length === 0) return null;
+            return (
+              <CategorySection
+                key={cat}
+                category={cat}
+                matches={catMatches}
+                score={result.byCategoryScore[cat] ?? 0}
+              />
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+}
