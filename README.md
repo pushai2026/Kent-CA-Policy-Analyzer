@@ -9,7 +9,7 @@
 
 **No download. No install. No server.**
 
-👉 **[(https://github.com/pushai2026/Kent-CA-Policy-Analyzer)(https://github.com/pushai2026/Kent-CA-Policy-Analyzer))**
+👉 **[(https://github.com/pushai2026/Kent-CA-Policy-Analyzer)]**
 
 1. Click **Connect Tenant**
 2. Sign in with your Entra ID credentials
